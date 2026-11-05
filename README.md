@@ -22,7 +22,7 @@ python -m venv .venv
 ```
 
 ```bash
-.venv\Scripts\python.exe -m pip install numpy scipy pyloudnorm
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 Music isn't stored in the repo, so download your tracks into `christmas\music\` on that machine.
