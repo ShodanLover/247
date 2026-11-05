@@ -1,0 +1,901 @@
+<!doctype html>
+<!--
+  Live Christmas fireplace scene. The countdown to Christmas (DD:HH:MM:SS) is spelled
+  out by strings of Christmas lights hung across the top of the wall. Everything is
+  drawn live on a canvas, so the fire never visibly repeats and the bulbs light the room.
+
+  OBS: Sources > + > Browser > Local file = this file, 1920 x 1080, 30 or 60 fps.
+
+  URL options:
+    seconds=0      show DD:HH:MM instead of DD:HH:MM:SS
+    demo=fast      run the clock 60x faster (to preview the digits changing)
+    volume=0.9     music volume (0-1)
+    card=0         hide the "now playing" card
+
+  Music: put tracks in ../music, run build_playlist.py, and the scene shuffles them with
+  crossfades and shows the song and artist in the bottom right. In OBS tick
+  "Control audio via OBS" on the browser source so the music goes into the stream.
+    date=2026-12-25T00:00:00-05:00   count to a specific moment (default: Dec 25, this PC's time)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Christmas Fireplace</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas {
+    position: absolute; inset: 0; margin: auto;
+    width: 100vw; height: 56.25vw; max-height: 100vh; max-width: 177.78vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../playlist.js"></script>
+<script>
+"use strict";
+const W = 1920, H = 1080;
+const Q = new URLSearchParams(location.search);
+const cv = document.getElementById("c");
+cv.width = W; cv.height = H;
+const ctx = cv.getContext("2d");
+
+// ------------------------------------------------------------------ helpers
+function mulberry32(a) {
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+function makeNoise(seed) {          // smooth 1D value noise in [0, 1]
+  const r = mulberry32(seed), p = Array.from({ length: 256 }, r);
+  return x => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+    return p[i & 255] * (1 - u) + p[(i + 1) & 255] * u; };
+}
+const rand = mulberry32(7);
+const noise = makeNoise(11);
+const canvas = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+function rr(g, x, y, w, h, r) { g.beginPath(); g.roundRect(x, y, w, h, r); }
+
+// ------------------------------------------------------------------ layout
+const FLOOR = 900;
+const FP = { x0: 470, x1: 1050, top: 432 };                 // brick surround
+const FB = { x0: 610, x1: 910, top: 600, bot: 882 };        // firebox opening
+const MANTEL = { x0: 430, x1: 1090, y0: 398, y1: 432 };
+const WIN = { x0: 1250, x1: 1690, y0: 262, y1: 690 };
+const TREE = { cx: 215, base: 905, top: 250, w: 340 };
+const BOARD = { top: 24, unit: 21, step: 17 };               // light-string countdown: top y, grid unit, bulb spacing
+const CANDLES = [{ x: 975, h: 74 }, { x: 1030, h: 52 }];
+
+const PANES = [];
+{
+  const fr = 24, mul = 14, ix0 = WIN.x0 + fr, iy0 = WIN.y0 + fr;
+  const iw = WIN.x1 - WIN.x0 - 2 * fr, ih = WIN.y1 - WIN.y0 - 2 * fr;
+  const cw = (iw - mul) / 2, rh = (ih - 2 * mul) / 3;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++)
+    PANES.push({ x: ix0 + c * (cw + mul), y: iy0 + r * (rh + mul), w: cw, h: rh });
+}
+
+function fireboxPath(g) {
+  g.beginPath();
+  g.moveTo(FB.x0, FB.bot); g.lineTo(FB.x0, FB.top + 70);
+  g.quadraticCurveTo(FB.x0, FB.top, (FB.x0 + FB.x1) / 2, FB.top);
+  g.quadraticCurveTo(FB.x1, FB.top, FB.x1, FB.top + 70);
+  g.lineTo(FB.x1, FB.bot); g.closePath();
+}
+
+// ------------------------------------------------------------------ the view outside (static part)
+const outside = canvas(W, H);
+{
+  const g = outside.getContext("2d");
+  const sky = g.createLinearGradient(0, WIN.y0, 0, WIN.y1);
+  sky.addColorStop(0, "#0a1230"); sky.addColorStop(0.7, "#1f2b52"); sky.addColorStop(1, "#33406a");
+  g.fillStyle = sky; g.fillRect(WIN.x0, WIN.y0, WIN.x1 - WIN.x0, WIN.y1 - WIN.y0);
+  const moon = g.createRadialGradient(1610, 290, 0, 1610, 290, 160);
+  moon.addColorStop(0, "rgba(220,230,255,0.55)"); moon.addColorStop(0.12, "rgba(220,230,255,0.25)");
+  moon.addColorStop(1, "rgba(220,230,255,0)");
+  g.fillStyle = moon; g.fillRect(WIN.x0, WIN.y0, WIN.x1 - WIN.x0, WIN.y1 - WIN.y0);
+  g.fillStyle = "#eef2ff"; g.beginPath(); g.arc(1610, 290, 16, 0, Math.PI * 2); g.fill();
+
+  const hill = (base, amp, color, seed) => {
+    const n = makeNoise(seed);
+    g.fillStyle = color; g.beginPath(); g.moveTo(WIN.x0, WIN.y1);
+    for (let x = WIN.x0; x <= WIN.x1; x += 8) g.lineTo(x, base - n(x / 90) * amp);
+    g.lineTo(WIN.x1, WIN.y1); g.closePath(); g.fill();
+  };
+  hill(575, 60, "#6f84ad", 3);
+  // distant pines with snowy tips
+  const tr = mulberry32(5);
+  for (let i = 0; i < 26; i++) {
+    const x = WIN.x0 + tr() * (WIN.x1 - WIN.x0), s = 18 + tr() * 26, y = 560 + tr() * 30;
+    for (let k = 0; k < 3; k++) {
+      const ty = y - s * (1.2 + k * 0.7), hw = s * (0.55 - k * 0.13);
+      g.fillStyle = "#1c2b45"; g.beginPath(); g.moveTo(x, ty - s * 0.8); g.lineTo(x - hw, ty + s * 0.3); g.lineTo(x + hw, ty + s * 0.3); g.fill();
+      g.fillStyle = "rgba(225,235,255,0.75)"; g.beginPath(); g.moveTo(x, ty - s * 0.8); g.lineTo(x - hw * 0.35, ty - s * 0.4); g.lineTo(x + hw * 0.35, ty - s * 0.4); g.fill();
+    }
+  }
+  hill(625, 40, "#c6d3ea", 8);
+  // a distant cabin with a warm window
+  g.fillStyle = "#2a2230"; g.fillRect(1395, 588, 46, 26);
+  g.beginPath(); g.moveTo(1389, 590); g.lineTo(1418, 568); g.lineTo(1447, 590); g.fill();
+  g.fillStyle = "#e8eef9"; g.beginPath(); g.moveTo(1389, 590); g.lineTo(1418, 568); g.lineTo(1447, 590); g.lineTo(1418, 576); g.fill();
+  g.fillStyle = "#ffcf7a"; g.fillRect(1407, 597, 9, 8); g.fillRect(1424, 597, 9, 8);
+  hill(668, 18, "#dfe7f5", 13);
+}
+
+// frost on the glass corners (drawn over the snowfall)
+const frost = canvas(W, H);
+{
+  const g = frost.getContext("2d");
+  for (const p of PANES) {
+    g.save(); g.beginPath(); g.rect(p.x, p.y, p.w, p.h); g.clip();
+    for (const [cx, cy] of [[p.x, p.y], [p.x + p.w, p.y], [p.x, p.y + p.h], [p.x + p.w, p.y + p.h]]) {
+      const gr = g.createRadialGradient(cx, cy, 0, cx, cy, 70);
+      gr.addColorStop(0, "rgba(225,238,255,0.35)"); gr.addColorStop(1, "rgba(225,238,255,0)");
+      g.fillStyle = gr; g.fillRect(p.x, p.y, p.w, p.h);
+    }
+    // snow piled on the bottom of each pane's glass bar
+    g.fillStyle = "rgba(240,245,255,0.92)"; g.beginPath(); g.moveTo(p.x, p.y + p.h);
+    const sn = makeNoise(Math.round(p.x + p.y));
+    for (let x = 0; x <= p.w; x += 6) g.lineTo(p.x + x, p.y + p.h - 4 - sn(x / 25) * 9);
+    g.lineTo(p.x + p.w, p.y + p.h); g.fill();
+    g.restore();
+  }
+}
+
+// ------------------------------------------------------------------ the room (static, with holes for the panes)
+const room = canvas(W, H);
+const treeLights = [], garland = [];
+{
+  const g = room.getContext("2d");
+  // wallpaper: deep green with soft stripes and little diamonds
+  g.fillStyle = "#38564a"; g.fillRect(0, 0, W, FLOOR);
+  g.fillStyle = "#3e5d4f";
+  for (let x = 0; x < W; x += 64) g.fillRect(x, 0, 30, 640);
+  g.fillStyle = "rgba(210,190,140,0.10)";
+  for (let y = 30; y < 640; y += 64) for (let x = 47; x < W; x += 64) {
+    g.beginPath(); g.moveTo(x, y - 6); g.lineTo(x + 5, y); g.lineTo(x, y + 6); g.lineTo(x - 5, y); g.fill();
+  }
+  // wainscot panels
+  g.fillStyle = "#4f3322"; g.fillRect(0, 640, W, FLOOR - 640);
+  g.fillStyle = "#6a4530"; g.fillRect(0, 628, W, 16);
+  g.fillStyle = "rgba(255,220,180,0.10)"; g.fillRect(0, 628, W, 3);
+  for (let x = 20; x < W; x += 150) {
+    g.strokeStyle = "rgba(0,0,0,0.28)"; g.lineWidth = 3; g.strokeRect(x, 668, 120, 200);
+    g.strokeStyle = "rgba(255,220,180,0.08)"; g.lineWidth = 2; g.strokeRect(x + 3, 671, 120, 200);
+  }
+  g.fillStyle = "#3a2418"; g.fillRect(0, FLOOR - 16, W, 16);
+  // crown molding along the ceiling, where the light strings hang from
+  g.fillStyle = "#4a3022"; g.fillRect(0, 0, W, 8);
+  g.fillStyle = "rgba(255,220,180,0.08)"; g.fillRect(0, 8, W, 2);
+
+  // poinsettia on the left of the mantel
+  {
+    const px = 545, py = MANTEL.y0;
+    g.fillStyle = "#b8862f"; g.beginPath(); g.moveTo(px - 34, py); g.lineTo(px - 40, py - 44); g.lineTo(px + 40, py - 44); g.lineTo(px + 34, py); g.fill();
+    g.fillStyle = "rgba(255,240,200,0.25)"; g.fillRect(px - 40, py - 44, 80, 5);
+    const pr = mulberry32(31);
+    for (let i = 0; i < 9; i++) {           // green leaves underneath
+      const a = Math.PI + (i / 8) * Math.PI;
+      g.save(); g.translate(px + Math.cos(a) * 40, py - 54 + Math.sin(a) * 26); g.rotate(a);
+      g.fillStyle = "#1f4f2c"; g.beginPath(); g.ellipse(0, 0, 26, 10, 0, 0, Math.PI * 2); g.fill(); g.restore();
+    }
+    for (let i = 0; i < 12; i++) {          // red bracts
+      const a = (i / 12) * Math.PI * 2 + pr() * 0.3, len = 30 + pr() * 12;
+      g.save(); g.translate(px + Math.cos(a) * len * 0.6, py - 74 + Math.sin(a) * len * 0.45); g.rotate(a);
+      g.fillStyle = i % 2 ? "#b3141c" : "#9a1018"; g.beginPath(); g.ellipse(0, 0, len * 0.6, 10, 0, 0, Math.PI * 2); g.fill(); g.restore();
+    }
+    g.fillStyle = "#e8c23a";
+    for (let i = 0; i < 6; i++) { g.beginPath(); g.arc(px - 6 + (i % 3) * 6, py - 77 + Math.floor(i / 3) * 6, 2.6, 0, Math.PI * 2); g.fill(); }
+  }
+
+  // wooden floor
+  g.fillStyle = "#3b2416"; g.fillRect(0, FLOOR, W, H - FLOOR);
+  for (let y = FLOOR, k = 0; y < H; k++) {
+    const h = 14 + k * 5;
+    g.fillStyle = k % 2 ? "rgba(255,210,160,0.035)" : "rgba(0,0,0,0.08)";
+    g.fillRect(0, y, W, h);
+    g.fillStyle = "rgba(0,0,0,0.35)"; g.fillRect(0, y, W, 2);
+    for (let x = rand() * 300; x < W; x += 260 + rand() * 260) g.fillRect(x, y, 2, h);
+    y += h;
+  }
+  // rug
+  g.save(); g.translate(760, 990); g.scale(1, 0.13);
+  for (const [r, c] of [[560, "#5a1517"], [530, "#c9a36a"], [515, "#7a1d1f"], [420, "#8a2a25"], [300, "#6b1a1c"]]) {
+    g.fillStyle = c; g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill();
+  }
+  g.restore();
+
+  // brick fireplace surround
+  const bricks = (x0, y0, x1, y1, bw, bh, dark) => {
+    g.fillStyle = dark ? "#1b100c" : "#5d4c44"; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    for (let y = y0, row = 0; y < y1; y += bh, row++) {
+      for (let x = x0 - (row % 2) * bw / 2; x < x1; x += bw) {
+        const v = rand();
+        g.fillStyle = dark ? `hsl(12, 30%, ${8 + v * 6}%)` : `hsl(${8 + v * 10}, ${42 + v * 16}%, ${29 + rand() * 11}%)`;
+        const bx = Math.max(x + 2, x0), ex = Math.min(x + bw - 2, x1);
+        if (ex > bx) g.fillRect(bx, y + 2, ex - bx, Math.min(bh - 4, y1 - y - 2));
+      }
+    }
+  };
+  bricks(FP.x0, FP.top, FP.x1, FLOOR, 58, 23, false);
+  // firebox
+  g.save(); fireboxPath(g); g.clip();
+  bricks(FB.x0, FB.top, FB.x1, FB.bot, 46, 19, true);
+  const soot = g.createLinearGradient(0, FB.top, 0, FB.bot);
+  soot.addColorStop(0, "rgba(0,0,0,0.85)"); soot.addColorStop(0.6, "rgba(0,0,0,0.35)"); soot.addColorStop(1, "rgba(30,10,0,0.1)");
+  g.fillStyle = soot; g.fillRect(FB.x0, FB.top, FB.x1 - FB.x0, FB.bot - FB.top);
+  // logs and grate
+  const log = (x0, x1, y, h, c) => {
+    g.fillStyle = c; rr(g, x0, y, x1 - x0, h, h / 2); g.fill();
+    g.strokeStyle = "rgba(0,0,0,0.35)"; g.lineWidth = 2;
+    for (let x = x0 + 18; x < x1 - 18; x += 22 + rand() * 18) { g.beginPath(); g.moveTo(x, y + 4); g.lineTo(x + 10, y + h - 4); g.stroke(); }
+    g.fillStyle = "#9a7350"; g.beginPath(); g.ellipse(x1 - h / 2, y + h / 2, h / 2.6, h / 2.2, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#6c4a30"; g.beginPath(); g.ellipse(x1 - h / 2, y + h / 2, h / 5, h / 4.5, 0, 0, Math.PI * 2); g.stroke();
+  };
+  log(660, 860, 826, 30, "#3a2416");
+  log(636, 884, 846, 32, "#4a2d1a");
+  g.fillStyle = "#111"; for (let x = 640; x < 885; x += 26) g.fillRect(x, 870, 6, 14);
+  g.fillRect(630, 876, 260, 6);
+  g.restore();
+  // hearth
+  g.fillStyle = "#5c534e"; g.fillRect(440, 882, 640, 34);
+  g.fillStyle = "rgba(255,240,220,0.12)"; g.fillRect(440, 882, 640, 4);
+  // mantel
+  const wood = g.createLinearGradient(0, MANTEL.y0, 0, MANTEL.y1);
+  wood.addColorStop(0, "#7a4b2c"); wood.addColorStop(1, "#4c2c19");
+  g.fillStyle = wood; g.fillRect(MANTEL.x0, MANTEL.y0, MANTEL.x1 - MANTEL.x0, MANTEL.y1 - MANTEL.y0);
+  g.fillStyle = "rgba(255,225,190,0.22)"; g.fillRect(MANTEL.x0, MANTEL.y0, MANTEL.x1 - MANTEL.x0, 3);
+  g.fillStyle = "#4c2c19";
+  for (const x of [MANTEL.x0 + 30, MANTEL.x1 - 66]) { g.fillRect(x, MANTEL.y1, 36, 30); g.fillRect(x + 6, MANTEL.y1 + 30, 24, 14); }
+
+  // wreath above the mantel
+  const wr = mulberry32(21);
+  for (let i = 0; i < 140; i++) {
+    const a = wr() * Math.PI * 2, r = 70 + wr() * 30;
+    g.save(); g.translate(790 + Math.cos(a) * r, 285 + Math.sin(a) * r); g.rotate(a + wr() * 1.5);
+    g.fillStyle = ["#1d4a2b", "#255c35", "#173d24", "#2e6b3e"][Math.floor(wr() * 4)];
+    g.beginPath(); g.ellipse(0, 0, 16, 6, 0, 0, Math.PI * 2); g.fill(); g.restore();
+  }
+  for (let i = 0; i < 26; i++) {
+    const a = wr() * Math.PI * 2, r = 74 + wr() * 22;
+    g.fillStyle = "#b3141c"; g.beginPath(); g.arc(790 + Math.cos(a) * r, 285 + Math.sin(a) * r, 4.5, 0, Math.PI * 2); g.fill();
+  }
+  g.fillStyle = "#a3161d";
+  g.beginPath(); g.moveTo(790, 372); g.quadraticCurveTo(745, 345, 742, 380); g.quadraticCurveTo(760, 392, 790, 372); g.fill();
+  g.beginPath(); g.moveTo(790, 372); g.quadraticCurveTo(835, 345, 838, 380); g.quadraticCurveTo(820, 392, 790, 372); g.fill();
+  g.beginPath(); g.moveTo(784, 372); g.lineTo(768, 418); g.lineTo(780, 412); g.lineTo(792, 376); g.lineTo(804, 412); g.lineTo(816, 418); g.lineTo(797, 372); g.fill();
+  g.fillStyle = "#c22a2f"; g.beginPath(); g.arc(790, 373, 8, 0, Math.PI * 2); g.fill();
+
+  // candles on the mantel
+  for (const c of CANDLES) {
+    const cg = g.createLinearGradient(c.x - 14, 0, c.x + 14, 0);
+    cg.addColorStop(0, "#d9cdb3"); cg.addColorStop(0.4, "#f4ecd9"); cg.addColorStop(1, "#bfae8f");
+    g.fillStyle = cg; rr(g, c.x - 14, MANTEL.y0 - c.h, 28, c.h, 3); g.fill();
+    g.fillStyle = "#222"; g.fillRect(c.x - 1, MANTEL.y0 - c.h - 8, 2, 8);
+  }
+
+  // stockings
+  const stocking = (x, y, col, cuff) => {
+    g.strokeStyle = "#2a1a10"; g.lineWidth = 2; g.beginPath(); g.moveTo(x + 30, MANTEL.y1); g.lineTo(x + 30, y + 4); g.stroke();
+    g.fillStyle = col; g.beginPath();
+    g.moveTo(x, y + 20); g.lineTo(x + 62, y + 20); g.lineTo(x + 62, y + 78);
+    g.bezierCurveTo(x + 62, y + 92, x + 108, y + 88, x + 110, y + 112);
+    g.bezierCurveTo(x + 112, y + 136, x + 40, y + 142, x + 18, y + 128);
+    g.bezierCurveTo(x + 2, y + 118, x, y + 100, x, y + 82); g.closePath(); g.fill();
+    g.fillStyle = "rgba(0,0,0,0.18)"; g.fillRect(x + 44, y + 20, 18, 60);
+    g.fillStyle = cuff; rr(g, x - 5, y, 72, 28, 8); g.fill();
+    g.fillStyle = "rgba(0,0,0,0.12)"; g.fillRect(x - 5, y + 22, 72, 6);
+  };
+  stocking(548, 442, "#9e1d22", "#f1ebe0");
+  stocking(690, 446, "#1f5a36", "#f1ebe0");
+  stocking(832, 440, "#b8862f", "#f1ebe0");
+
+  // window: frame, panes cut out, curtains
+  g.fillStyle = "#e7dfd1"; g.fillRect(WIN.x0, WIN.y0, WIN.x1 - WIN.x0, WIN.y1 - WIN.y0);
+  for (const p of PANES) {
+    g.clearRect(p.x, p.y, p.w, p.h);
+    g.strokeStyle = "rgba(0,0,0,0.25)"; g.lineWidth = 3; g.strokeRect(p.x - 1.5, p.y - 1.5, p.w + 3, p.h + 3);
+  }
+  g.fillStyle = "#efe7da"; g.fillRect(WIN.x0 - 34, WIN.y1, WIN.x1 - WIN.x0 + 68, 22);
+  g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(WIN.x0 - 34, WIN.y1 + 22, WIN.x1 - WIN.x0 + 68, 6);
+  const curtain = (x0, x1, flip) => {
+    const n = 7, w = (x1 - x0) / n;
+    for (let i = 0; i < n; i++) {
+      const gr = g.createLinearGradient(x0 + i * w, 0, x0 + (i + 1) * w, 0);
+      gr.addColorStop(0, "#5e1418"); gr.addColorStop(0.5, "#8d2228"); gr.addColorStop(1, "#5e1418");
+      g.fillStyle = gr;
+      const sway = (flip ? (n - i) : i) * 3;
+      g.beginPath(); g.moveTo(x0 + i * w, WIN.y0 - 46); g.lineTo(x0 + (i + 1) * w, WIN.y0 - 46);
+      g.lineTo(x0 + (i + 1) * w + (flip ? sway : -sway), 770); g.lineTo(x0 + i * w + (flip ? sway : -sway), 770); g.fill();
+    }
+    g.fillStyle = "#c9a35a"; rr(g, x0 - 6, 520, x1 - x0 + 12, 14, 7); g.fill();   // tie-back
+  };
+  curtain(WIN.x0 - 112, WIN.x0 + 20, false);
+  curtain(WIN.x1 - 20, WIN.x1 + 112, true);
+  g.fillStyle = "#b8924c"; g.fillRect(WIN.x0 - 140, WIN.y0 - 56, WIN.x1 - WIN.x0 + 280, 9);
+  for (const x of [WIN.x0 - 146, WIN.x1 + 136]) { g.beginPath(); g.arc(x + 5, WIN.y0 - 52, 9, 0, Math.PI * 2); g.fill(); }
+
+  // christmas tree: thousands of needle strokes over a dark core give it branches and depth
+  {
+    const top = TREE.top + 8, bot = TREE.base - 58, hwMax = TREE.w / 2;
+    const tr = mulberry32(77);
+    const halfW = y => {     // cone with scalloped branch tiers
+      const u = Math.max(0, (y - top) / (bot - top));
+      return hwMax * Math.pow(u, 0.92) * (0.84 + 0.16 * Math.abs(Math.sin(u * Math.PI * 5.5)));
+    };
+    const pick = () => {     // a random point on the tree, more of them low down where it's wider
+      const y = top + (bot - top) * Math.sqrt(tr()), hw = halfW(y);
+      return { y, hw, side: tr() < 0.5 ? -1 : 1, reach: Math.pow(tr(), 0.6) };
+    };
+    g.fillStyle = "#0d2215"; g.beginPath(); g.moveTo(TREE.cx, top);
+    for (let y = top; y <= bot; y += 4) g.lineTo(TREE.cx + halfW(y) * 0.92, y);
+    for (let y = bot; y >= top; y -= 4) g.lineTo(TREE.cx - halfW(y) * 0.92, y);
+    g.fill();
+    g.lineCap = "round";
+    const N = 4600;
+    for (let i = 0; i < N; i++) {          // back to front: each layer a little lighter
+      const depth = i / N, p = pick();
+      const x = TREE.cx + p.side * p.hw * p.reach;
+      const len = 7 + tr() * 13 * (0.6 + p.reach);
+      const dx = p.side * len * (0.7 + 0.25 * tr()), dy = len * (0.2 + 0.4 * p.reach);   // outward, drooping
+      const light = 13 + depth * 20 + (p.side > 0 ? 5 : 0) + tr() * 7;    // the fire side is brighter
+      g.strokeStyle = `hsl(${143 + tr() * 10}, ${38 + tr() * 14}%, ${light}%)`;
+      g.lineWidth = 2 + tr() * 2;
+      g.beginPath(); g.moveTo(x, p.y); g.lineTo(x + dx, p.y + dy); g.stroke();
+    }
+    // gold bead garland swagged across the front
+    for (let k = 0; k < 4; k++) {
+      const y0 = top + (bot - top) * (0.24 + 0.2 * k), xl = TREE.cx - halfW(y0) * 0.85, xr = TREE.cx + halfW(y0 + 46) * 0.85;
+      for (let s = 0; s <= 1; s += 7 / (xr - xl)) {
+        const x = xl + (xr - xl) * s, y = y0 + s * 46 + Math.sin(s * Math.PI) * 26;
+        g.fillStyle = "#c99a3a"; g.beginPath(); g.arc(x, y, 2.8, 0, Math.PI * 2); g.fill();
+        g.fillStyle = "rgba(255,240,190,0.7)"; g.beginPath(); g.arc(x - 0.8, y - 0.9, 1.1, 0, Math.PI * 2); g.fill();
+      }
+    }
+    // shaded glass ornaments
+    const orn = [["#e0464c", "#7d0f16"], ["#f1cd6a", "#8a5f14"], ["#e8edf5", "#7c8798"], ["#5b8fe0", "#16336e"], ["#d36ad0", "#5e1a5c"]];
+    for (let i = 0; i < 34; i++) {
+      const p = pick(), x = TREE.cx + p.side * p.hw * p.reach * 0.8, r = 7 + tr() * 6;
+      const [hi, lo] = orn[Math.floor(tr() * orn.length)];
+      const og = g.createRadialGradient(x + r * 0.3, p.y - r * 0.35, r * 0.1, x, p.y, r);
+      og.addColorStop(0, "#fff"); og.addColorStop(0.18, hi); og.addColorStop(1, lo);
+      g.fillStyle = og; g.beginPath(); g.arc(x, p.y, r, 0, Math.PI * 2); g.fill();
+      g.fillStyle = "#b9b2a3"; g.fillRect(x - 2.5, p.y - r - 3, 5, 4);
+    }
+    // lights tucked into the branches: mostly warm white, some colored
+    const lc = [[255, 214, 150], [255, 214, 150], [255, 214, 150], [255, 80, 70], [110, 220, 130], [110, 160, 255], [255, 175, 60]];
+    for (let i = 0; i < 150; i++) {
+      const p = pick();
+      treeLights.push({ x: TREE.cx + p.side * p.hw * p.reach * 0.88, y: p.y + 4,
+        c: lc[Math.floor(tr() * lc.length)], steady: tr() < 0.35, on: true, next: tr() * 2, level: 1 });
+    }
+  }
+  g.fillStyle = "#3d2616"; g.fillRect(TREE.cx - 16, TREE.base - 66, 32, 30);
+  g.fillStyle = "#7a1d1f"; rr(g, TREE.cx - 46, TREE.base - 44, 92, 44, 4); g.fill();
+  g.fillStyle = "#c9a35a"; g.fillRect(TREE.cx - 46, TREE.base - 30, 92, 6);
+  // presents
+  for (const [x, y, w, h, c, rb] of [[64, 846, 78, 58, "#2f6c45", "#e9d9a5"], [282, 862, 70, 42, "#b8862f", "#9e1d22"], [330, 830, 52, 74, "#9e1d22", "#e9d9a5"]]) {
+    g.fillStyle = c; g.fillRect(x, y, w, h);
+    g.fillStyle = rb; g.fillRect(x + w / 2 - 5, y, 10, h); g.fillRect(x, y + h / 2 - 5, w, 10);
+    g.beginPath(); g.ellipse(x + w / 2 - 10, y - 6, 12, 7, -0.4, 0, Math.PI * 2); g.ellipse(x + w / 2 + 10, y - 6, 12, 7, 0.4, 0, Math.PI * 2); g.fill();
+  }
+
+  // garland along the mantel edge
+  for (let i = 0; i <= 120; i++) {
+    const u = i / 120, x = MANTEL.x0 - 8 + u * (MANTEL.x1 - MANTEL.x0 + 16);
+    const y = MANTEL.y1 + 2 + Math.abs(Math.sin(u * Math.PI * 4)) * 26;
+    g.fillStyle = ["#1d4a2b", "#255c35", "#173d24"][i % 3];
+    g.beginPath(); g.ellipse(x, y, 16, 9, rand() * 3, 0, Math.PI * 2); g.fill();
+    if (i % 6 === 3) garland.push({ x, y: y + 4, ph: rand() * 6.28 });
+  }
+}
+
+// ------------------------------------------------------------------ the light-bulb countdown
+// Each digit is its own light string, bent into the shape of the numeral and hung from a nail.
+// Shapes are strokes through points on a 4 x 6 grid; bulbs are spaced evenly along them.
+const P = Math.PI;
+const arc = (cx, cy, rx, ry, a0, a1, n) => Array.from({ length: n + 1 }, (_, i) => {
+  const a = a0 + (a1 - a0) * i / n; return [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+});
+const SHAPES = {
+  "0": [arc(2, 3, 2, 3, -P / 2, 1.5 * P, 24)],
+  "1": [[[0.9, 1.2], [2.1, 0], [2.1, 6]], [[0.9, 6], [3.3, 6]]],
+  "2": [[[0.2, 1.4], [0.9, 0.3], [2, 0], [3.2, 0.3], [3.8, 1.4], [3.5, 2.6], [2.4, 3.7], [0.1, 6], [4, 6]]],
+  "3": [[[0.2, 0.8], [1.3, 0], [2.8, 0.05], [3.7, 0.8], [3.6, 2.1], [2.1, 2.9], [3.6, 3.7], [3.9, 4.9], [3.1, 5.8], [1.5, 6], [0.2, 5.2]]],
+  "4": [[[3, 6], [3, 0], [0, 4.2], [4, 4.2]]],
+  "5": [[[3.8, 0], [0.5, 0], [0.2, 2.8], [2.1, 2.4], [3.5, 3], [3.9, 4.4], [3.3, 5.6], [1.8, 6], [0.2, 5.3]]],
+  "6": [[[3.4, 0.4], [2.2, 0], [0.9, 0.5], [0.1, 2.1], [0, 4], [0.5, 5.5], [2, 6], [3.4, 5.5], [3.9, 4.2], [3.4, 3], [2, 2.6], [0.6, 3.1], [0.05, 4]]],
+  "7": [[[0, 0], [4, 0], [2.7, 2.3], [1.7, 6]]],
+  "8": [[...arc(2, 1.5, 1.6, 1.5, P / 2, 2.5 * P, 16), ...arc(2, 4.5, 1.9, 1.5, -P / 2, 1.5 * P, 18).slice(1)]],
+  ":": [[[0.4, 2]], [[0.4, 4.4]]],
+};
+SHAPES["9"] = SHAPES["6"].map(s => s.map(([x, y]) => [4 - x, 6 - y]));   // a 6 turned upside down
+
+// classic bulb colors; along each string they repeat red, green, blue, gold, orange
+const BULB_COLORS = [[255, 64, 56], [70, 215, 105], [255, 190, 60], [80, 145, 255], [255, 228, 175], [255, 135, 40]];
+const SEQ = [0, 1, 3, 2, 5];
+
+// Classic C9 bulb (pointed glass hanging from a green socket), pre-drawn per color, lit and unlit.
+// Sprite origin: socket top at (12, 3), bulb tip near (12, 33).
+function c9Sprite([r, g, b], lit) {
+  const c = canvas(24, 38), x = c.getContext("2d");
+  x.translate(12, 10);
+  x.beginPath(); x.moveTo(-4.5, 0); x.bezierCurveTo(-8.8, 3, -8.2, 12, -3.4, 19);
+  x.quadraticCurveTo(0, 23.5, 3.4, 19); x.bezierCurveTo(8.2, 12, 8.8, 3, 4.5, 0); x.closePath();
+  if (lit) {
+    const gr = x.createRadialGradient(0, 11, 1, 0, 11, 13);
+    gr.addColorStop(0, `rgb(${Math.min(255, r + 150)},${Math.min(255, g + 150)},${Math.min(255, b + 150)})`);
+    gr.addColorStop(0.45, `rgb(${r},${g},${b})`); gr.addColorStop(1, `rgb(${r * 0.62 | 0},${g * 0.62 | 0},${b * 0.62 | 0})`);
+    x.fillStyle = gr;
+  } else {
+    x.fillStyle = `rgb(${r * 0.11 | 0},${g * 0.11 | 0},${b * 0.11 | 0})`;
+  }
+  x.fill();
+  x.fillStyle = lit ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.07)";
+  x.beginPath(); x.ellipse(-3, 8, 1.3, 4.5, 0.15, 0, Math.PI * 2); x.fill();
+  // ribbed green socket
+  x.fillStyle = "#1d4626"; x.beginPath(); x.roundRect(-4.6, -7, 9.2, 8, 2); x.fill();
+  x.fillStyle = "rgba(255,255,255,0.12)"; x.fillRect(-4.6, -5, 9.2, 1); x.fillRect(-4.6, -2, 9.2, 1);
+  return c;
+}
+
+// glow sprite per color, drawn additively behind each lit bulb (kept tight so digits stay readable)
+const glowSprites = BULB_COLORS.map(([r, g, b]) => {
+  const c = canvas(48, 48), x = c.getContext("2d"), gr = x.createRadialGradient(24, 24, 0, 24, 24, 24);
+  gr.addColorStop(0, `rgba(${r},${g},${b},0.85)`); gr.addColorStop(0.4, `rgba(${r},${g},${b},0.22)`); gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  x.fillStyle = gr; x.fillRect(0, 0, 48, 48); return c;
+});
+const litBulbs = BULB_COLORS.map(c => c9Sprite(c, true));
+const darkBulbs = BULB_COLORS.map(c => c9Sprite(c, false));
+
+const START = Date.now();
+function countdownText(nowMs) {
+  if (Q.get("demo") === "fast") nowMs = START + (nowMs - START) * 60;
+  const now = new Date(nowMs);
+  let t = Q.get("date") ? new Date(Q.get("date")) : new Date(now.getFullYear(), 11, 25);
+  if (!Q.get("date") && now - t >= 2 * 86400e3) t = new Date(now.getFullYear() + 1, 11, 25);
+  const diff = t - now;
+  const party = diff <= 0 && diff > -2 * 86400e3;          // Christmas Day and the day after
+  const s = Math.max(0, Math.floor(diff / 1000));
+  const pad = n => String(n).padStart(2, "0");
+  const parts = [pad(Math.floor(s / 86400)), pad(Math.floor(s / 3600) % 24), pad(Math.floor(s / 60) % 60)];
+  if (Q.get("seconds") !== "0") parts.push(pad(s % 60));
+  return { text: parts.join(":"), party };
+}
+
+function smooth(pts) {             // Catmull-Rom curve through the points: a bent wire has no sharp corners
+  if (pts.length < 3) return pts;
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    for (let k = 0; k < 10; k++) {
+      const s = k / 10, s2 = s * s, s3 = s2 * s;
+      out.push([0, 1].map(d => 0.5 * (2 * p1[d] + (p2[d] - p0[d]) * s + (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * s2
+        + (3 * p1[d] - p0[d] - 3 * p2[d] + p3[d]) * s3)));
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+function resample(poly, step) {     // points spaced `step` apart along a polyline
+  const out = [poly[0]];
+  let carry = 0;
+  for (let i = 1; i < poly.length; i++) {
+    const [ax, ay] = poly[i - 1], [bx, by] = poly[i], len = Math.hypot(bx - ax, by - ay);
+    let d = step - carry;
+    while (d <= len) { out.push([ax + (bx - ax) * d / len, ay + (by - ay) * d / len]); d += step; }
+    carry = len - (d - step);
+  }
+  return out;
+}
+
+const shapeCache = {};
+function shapeFor(ch) {             // wire path + bulb positions for one character, in pixels
+  if (!shapeCache[ch]) {
+    const U = BOARD.unit;
+    const wires = SHAPES[ch].map(s => (s.length === 1 ? s : smooth(s)).map(([x, y]) => [x * U, y * U]));
+    const bulbs = [];
+    for (const w of wires) for (const [x, y] of (w.length === 1 ? w : resample(w, BOARD.step))) bulbs.push({ x, y, tilt: (rand() - 0.5) * 0.4 });
+    shapeCache[ch] = { wires, bulbs, width: (ch === ":" ? 0.8 : 4) * U };
+  }
+  return shapeCache[ch];
+}
+
+// One slot per character. When a character changes, its string blinks off and back on in the new shape.
+let slots = [];
+function updateBoard(dt, t, cd) {
+  const U = BOARD.unit, gap = 1.8 * U;
+  if (slots.length !== cd.text.length) {
+    const widths = [...cd.text].map(ch => shapeFor(ch).width);
+    let x = W / 2 - (widths.reduce((a, b) => a + b, 0) + gap * (widths.length - 1)) / 2;
+    slots = [...cd.text].map((ch, i) => { const s = { ch, x, t0: -99, level: 1, i }; x += widths[i] + gap; return s; });
+  }
+  let lit = 0;
+  slots.forEach((s, i) => {
+    const ch = cd.text[i];
+    if (ch !== s.ch) { s.ch = ch; s.t0 = t; s.cache = null; }
+    const b = t - s.t0;
+    const target = cd.party ? 0.5 + 0.5 * Math.sin(t * 5 + i) : (b < 0.18 || (b >= 0.34 && b < 0.5)) ? 0 : 1;   // blink, blink, on
+    s.level += (target - s.level) * Math.min(1, dt * 30);      // filaments still take a moment to light
+    lit += s.level;
+  });
+  return lit / slots.length;
+}
+
+function slotBulbs(s) {             // absolute positions; the bulb hangs just below the wire
+  const sh = shapeFor(s.ch);
+  return sh.bulbs.map((b, k) => ({ x: s.x + b.x, y: BOARD.top + b.y + 14, tilt: b.tilt, color: SEQ[(k + s.i * 2) % SEQ.length] }));
+}
+
+// Each string is drawn once into two cached images whenever its character changes: the wire with
+// dark bulbs (lit by the room like everything else) and the glowing bulbs (added on top, faded by
+// the blink). Per frame that's two image copies per character instead of hundreds of bulbs.
+function slotCache(s) {
+  if (!s.cache) {
+    const pad = 34, w = shapeFor(s.ch).width + pad * 2, h = BOARD.top + 6 * BOARD.unit + 52;
+    const base = canvas(w, h), lit = canvas(w, h);
+    const gb = base.getContext("2d"), gl = lit.getContext("2d");
+    gb.translate(pad - s.x, 0); gl.translate(pad - s.x, 0);
+    drawSlotWire(gb, s);
+    const bulbs = slotBulbs(s);
+    for (const B of bulbs) drawBulb(gb, B, darkBulbs[B.color]);
+    gl.globalCompositeOperation = "lighter";
+    for (const B of bulbs) gl.drawImage(glowSprites[B.color], B.x - 24 - Math.sin(B.tilt) * 6, B.y - 22);
+    gl.globalCompositeOperation = "source-over";
+    for (const B of bulbs) drawBulb(gl, B, litBulbs[B.color]);
+    s.cache = { base, lit, ox: s.x - pad };
+  }
+  return s.cache;
+}
+
+function drawBoardBase(g) {
+  for (const s of slots) { const c = slotCache(s); g.drawImage(c.base, c.ox, 0); }
+}
+
+function drawSlotWire(g, s) {
+  {
+    const sh = shapeFor(s.ch), ox = s.x, oy = BOARD.top;
+    g.beginPath();
+    // lead wire from a nail in the ceiling molding down to the start of the string
+    const [fx, fy] = sh.wires[0][0];
+    g.moveTo(ox + fx, 4); g.lineTo(ox + fx, oy + fy);
+    sh.wires.forEach((w, k) => {
+      if (k > 0) {                  // the string carries on to the next stroke, sagging a little
+        const [px, py] = sh.wires[k - 1][sh.wires[k - 1].length - 1], [qx, qy] = w[0];
+        g.quadraticCurveTo(ox + (px + qx) / 2, oy + Math.max(py, qy) + 18, ox + qx, oy + qy);
+      }
+      for (const [x, y] of w) g.lineTo(ox + x, oy + y);
+    });
+    // twisted two-strand green wire: a dark strand plus a dashed lighter strand on top
+    g.strokeStyle = "#16361e"; g.lineWidth = 3; g.stroke();
+    g.strokeStyle = "#2f6a3a"; g.lineWidth = 1.4; g.setLineDash([3, 3]); g.stroke(); g.setLineDash([]);
+    g.fillStyle = "#8a7a5a"; g.beginPath(); g.arc(ox + fx, 5, 2.5, 0, Math.PI * 2); g.fill();   // the nail
+  }
+}
+
+function drawBulb(g, B, sprite) {
+  g.save(); g.translate(B.x, B.y - 14); g.rotate(B.tilt); g.scale(0.82, 0.82);
+  g.drawImage(sprite, -12, -3); g.restore();
+}
+
+function drawBoardGlow(g, t) {
+  for (const s of slots) {
+    if (s.level < 0.02) continue;
+    const c = slotCache(s);
+    g.globalAlpha = s.level * (0.94 + 0.06 * Math.sin(t * 2.3 + s.i));
+    g.drawImage(c.lit, c.ox, 0);    // drawn with "lighter": the glowing bulbs add over the dark ones
+  }
+  g.globalAlpha = 1;
+}
+
+// ------------------------------------------------------------------ live elements
+const flakes = [];
+const fr = mulberry32(99);
+for (const [count, size, speed] of [[70, 1.3, 22], [60, 2.2, 36], [34, 3.2, 52]])
+  for (let i = 0; i < count; i++)
+    flakes.push({ x: fr() * (WIN.x1 - WIN.x0), y: fr() * (WIN.y1 - WIN.y0), r: size * (0.7 + fr() * 0.6), v: speed * (0.8 + fr() * 0.4), ph: fr() * 6.28 });
+
+const tongues = Array.from({ length: 11 }, (_, i) => {
+  const c = 1 - Math.abs(i - 5) / 6;
+  return { x: FB.x0 + 52 + i * (FB.x1 - FB.x0 - 104) / 10, w: 46 + rand() * 30 + c * 18, h: 90 + c * 150 + rand() * 40, s: rand() * 100, sp: 0.9 + rand() * 0.9 };
+});
+const embers = [];
+let firePs = [];
+const fireSprites = [[255, 246, 214], [255, 208, 112], [255, 150, 50], [236, 86, 26], [150, 36, 12]].map(([r, g, b]) => {
+  const c = canvas(64, 64), x = c.getContext("2d"), gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, `rgba(${r},${g},${b},1)`); gr.addColorStop(0.45, `rgba(${r},${g},${b},0.45)`); gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  x.fillStyle = gr; x.fillRect(0, 0, 64, 64); return c;
+});
+
+const lm = canvas(W / 2, H / 2), lg = lm.getContext("2d");
+const grain = canvas(256, 256);
+{
+  const g = grain.getContext("2d"), d = g.createImageData(256, 256);
+  for (let i = 0; i < d.data.length; i += 4) { const v = 128 + (Math.random() - 0.5) * 90; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+  g.putImageData(d, 0, 0);
+}
+const grainPat = ctx.createPattern(grain, "repeat");
+const vignette = canvas(W, H);
+{
+  const g = vignette.getContext("2d"), v = g.createRadialGradient(W * 0.48, H * 0.55, H * 0.35, W * 0.5, H * 0.5, H * 1.05);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,0.32)");
+  g.fillStyle = v; g.fillRect(0, 0, W, H);
+}
+
+const lightSprites = new Map();
+function lightSprite([r, g, b]) {       // small fairy-light glow with a bright core, cached per color
+  const k = `${r},${g},${b}`;
+  if (!lightSprites.has(k)) {
+    const c = canvas(32, 32), x = c.getContext("2d"), gr = x.createRadialGradient(16, 16, 0, 16, 16, 16);
+    gr.addColorStop(0, `rgb(${Math.min(255, r + 90)},${Math.min(255, g + 90)},${Math.min(255, b + 90)})`);
+    gr.addColorStop(0.16, `rgba(${r},${g},${b},0.9)`); gr.addColorStop(0.4, `rgba(${r},${g},${b},0.3)`); gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    x.fillStyle = gr; x.fillRect(0, 0, 32, 32); lightSprites.set(k, c);
+  }
+  return lightSprites.get(k);
+}
+
+function radial(g, x, y, r, stops) {
+  const gr = g.createRadialGradient(x, y, 0, x, y, r);
+  for (const [o, c] of stops) gr.addColorStop(o, c);
+  g.fillStyle = gr; g.fillRect(x - r, y - r, 2 * r, 2 * r);
+}
+
+// ------------------------------------------------------------------ music player
+// Shuffles the playlist (no song repeats until most others have played), crossfades between
+// tracks, and skips any file that fails to load. Runs on a timer, not the animation loop.
+const TRACKS = (window.PLAYLIST || []).filter(t => t.file);
+const VOLUME = Math.max(0, Math.min(1, +(Q.get("volume") || 0.9)));
+const FADE = 3;
+const player = { a: new Audio(), b: new Audio(), cur: null, prev: null, track: null, bag: [], recent: [],
+  shownAt: -99, fadeStart: 0, blocked: false };
+const nowS = () => performance.now() / 1000;
+for (const el of [player.a, player.b]) {
+  el.preload = "auto";
+  el.addEventListener("error", () => { if (el === player.cur) setTimeout(nextTrack, 500); });
+}
+function pickTrack() {
+  if (!player.bag.length) {
+    player.bag = TRACKS.map((_, i) => i);
+    for (let i = player.bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [player.bag[i], player.bag[j]] = [player.bag[j], player.bag[i]]; }
+  }
+  let k = player.bag.findIndex(i => !player.recent.includes(i));
+  if (k < 0) k = 0;
+  const i = player.bag.splice(k, 1)[0];
+  player.recent = [i, ...player.recent].slice(0, Math.max(0, Math.min(4, TRACKS.length - 1)));
+  return TRACKS[i];
+}
+function nextTrack() {
+  if (!TRACKS.length) return;
+  const el = player.cur === player.a ? player.b : player.a;
+  const t = pickTrack();
+  el.src = "../" + t.file; el.currentTime = 0; el.volume = 0;
+  el.play().then(() => { player.blocked = false; }).catch(() => { player.blocked = true; });
+  player.prev = player.cur; player.cur = el; player.track = t;
+  player.shownAt = nowS(); player.fadeStart = nowS();
+}
+setInterval(() => {
+  const cur = player.cur;
+  if (!cur || player.blocked) return;
+  const f = Math.min(1, (nowS() - player.fadeStart) / FADE);
+  cur.volume = VOLUME * f;
+  if (player.prev) { player.prev.volume = VOLUME * (1 - f); if (f >= 1) { player.prev.pause(); player.prev = null; } }
+  if (cur.ended || (cur.duration && cur.currentTime > cur.duration - FADE - 0.2)) nextTrack();
+}, 100);
+// A normal browser blocks sound until you click; OBS doesn't, so this only matters for previewing.
+addEventListener("pointerdown", () => {
+  if (player.blocked && player.cur) player.cur.play().then(() => { player.blocked = false; player.fadeStart = nowS(); });
+});
+if (TRACKS.length) nextTrack();
+
+// ------------------------------------------------------------------ "now playing" card
+function fitText(g, text, max) {
+  if (g.measureText(text).width <= max) return text;
+  while (text.length > 1 && g.measureText(text + "…").width > max) text = text.slice(0, -1);
+  return text.trimEnd() + "…";
+}
+function drawNowPlaying(g, t) {
+  const tr = player.track;
+  if (!tr || Q.get("card") === "0") return;
+  const age = nowS() - player.shownAt, e = 1 - Math.pow(1 - Math.min(1, age / 0.9), 3);   // slide in on each new song
+  const titleFont = "700 30px Georgia, 'Times New Roman', serif", artistFont = "500 21px 'Segoe UI', Arial, sans-serif";
+  g.font = titleFont; const tw = g.measureText(tr.title).width;
+  g.font = artistFont; const aw = g.measureText(tr.artist).width;
+  const textMax = 430, w = Math.max(320, Math.min(textMax, Math.max(tw, aw)) + 140), h = 108;
+  const x = W - 48 - w + (1 - e) * 60, y = H - 46 - h;
+  g.save();
+  g.globalAlpha = e;
+  g.shadowColor = "rgba(0,0,0,0.45)"; g.shadowBlur = 24; g.shadowOffsetY = 6;
+  g.fillStyle = "rgba(30,15,11,0.72)"; rr(g, x, y, w, h, 18); g.fill();
+  g.shadowColor = "transparent";
+  g.strokeStyle = "rgba(255,214,160,0.30)"; g.lineWidth = 1.5; rr(g, x + 0.5, y + 0.5, w - 1, h - 1, 18); g.stroke();
+  // a little spinning record
+  const cx = x + 58, cy = y + h / 2, spin = player.blocked ? 0 : t * 1.6;
+  g.fillStyle = "#121010"; g.beginPath(); g.arc(cx, cy, 36, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = "rgba(255,255,255,0.07)"; g.lineWidth = 1;
+  for (const r of [30, 25, 20]) { g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke(); }
+  g.strokeStyle = "rgba(255,255,255,0.22)"; g.lineWidth = 2;
+  g.beginPath(); g.arc(cx, cy, 31, spin, spin + 0.7); g.stroke();
+  g.fillStyle = "#b3141c"; g.beginPath(); g.arc(cx, cy, 12, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#f1e4c8"; g.beginPath(); g.arc(cx, cy, 2.5, 0, Math.PI * 2); g.fill();
+  // holly sprig on the corner
+  g.fillStyle = "#2a6b3c";
+  for (const [a, dx] of [[-0.5, -10], [0.5, 10]]) { g.save(); g.translate(x + w - 30 + dx, y + 18); g.rotate(a); g.beginPath(); g.ellipse(0, 0, 12, 5, 0, 0, Math.PI * 2); g.fill(); g.restore(); }
+  g.fillStyle = "#d01c25"; for (const [dx, dy] of [[-3, -2], [3, -1], [0, 4]]) { g.beginPath(); g.arc(x + w - 30 + dx, y + 18 + dy, 3.6, 0, Math.PI * 2); g.fill(); }
+  // text
+  const tx = x + 112;
+  g.textAlign = "left"; g.textBaseline = "alphabetic";
+  g.fillStyle = "#e9c48a"; g.font = "700 13px 'Segoe UI', Arial, sans-serif";
+  g.fillText("NOW PLAYING".split("").join(String.fromCharCode(8202)), tx, y + 30);
+  g.fillStyle = "#fff4e4"; g.font = titleFont; g.fillText(fitText(g, tr.title, textMax), tx, y + 64);
+  g.fillStyle = "rgba(255,236,212,0.75)"; g.font = artistFont; g.fillText(fitText(g, tr.artist, textMax), tx, y + 92);
+  g.restore();
+  if (player.blocked && !window.obsstudio) {     // previewing in a normal browser
+    g.font = "600 20px 'Segoe UI', Arial, sans-serif"; g.textAlign = "center";
+    g.fillStyle = "rgba(255,244,228,0.85)"; g.fillText("Click anywhere to start the music", W / 2, H - 40);
+  }
+}
+
+let last = performance.now();
+
+function frame(nowPerf) {
+  const t = nowPerf / 1000, dt = Math.min(0.1, (nowPerf - last) / 1000); last = nowPerf;
+  const nowMs = Date.now();
+  const flick = 0.72 + 0.28 * (0.55 * noise(t * 1.3) + 0.3 * noise(t * 4.3 + 20) + 0.15 * noise(t * 11 + 40));
+
+  const litFrac = updateBoard(dt, t, countdownText(nowMs));
+
+  // 1. outside view + snowfall + frost
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(outside, 0, 0);
+  ctx.fillStyle = "#fff";
+  for (const f of flakes) {
+    f.y += f.v * dt; f.x += Math.sin(t * 0.7 + f.ph) * 8 * dt + 6 * dt;
+    const span = WIN.y1 - WIN.y0, wspan = WIN.x1 - WIN.x0;
+    if (f.y > span) { f.y -= span + 10; f.x = Math.random() * wspan; }
+    if (f.x > wspan) f.x -= wspan;
+    ctx.globalAlpha = 0.55 + f.r * 0.12;
+    ctx.beginPath(); ctx.arc(WIN.x0 + f.x, WIN.y0 + f.y, f.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.drawImage(frost, 0, 0);
+
+  // 2. the room, then the light strings (all lit together below)
+  ctx.drawImage(room, 0, 0);
+  drawBoardBase(ctx);
+
+  // 3. lighting: dim blue ambient + flickering warm firelight, multiplied over everything
+  lg.setTransform(0.5, 0, 0, 0.5, 0, 0);
+  lg.globalCompositeOperation = "source-over";
+  lg.fillStyle = "rgb(84,78,96)"; lg.fillRect(0, 0, W, H);
+  lg.globalCompositeOperation = "lighter";
+  radial(lg, 760, 790, 1400 * (0.94 + 0.06 * flick), [[0, `rgba(255,185,120,${0.98 * flick})`], [0.35, `rgba(240,140,75,${0.6 * flick})`], [1, "rgba(0,0,0,0)"]]);
+  radial(lg, TREE.cx, 560, 480, [[0, "rgba(255,210,155,0.38)"], [1, "rgba(0,0,0,0)"]]);
+  radial(lg, 1470, 440, 720, [[0, "rgba(90,110,165,0.38)"], [1, "rgba(0,0,0,0)"]]);
+  radial(lg, 1000, 320, 300, [[0, `rgba(255,190,120,${0.3 + 0.08 * flick})`], [1, "rgba(0,0,0,0)"]]);
+  // the countdown lights wash the top of the wall with colored light
+  lg.save(); lg.translate(W / 2, 100); lg.scale(1, 0.32);
+  radial(lg, 0, 0, 900, [[0, `rgba(255,205,160,${0.55 * litFrac + 0.1})`], [0.6, `rgba(200,150,140,${0.25 * litFrac})`], [1, "rgba(0,0,0,0)"]]);
+  lg.restore();
+  lg.globalCompositeOperation = "source-over";
+  lg.fillStyle = "#fff";
+  for (const p of PANES) lg.fillRect(p.x, p.y, p.w, p.h);
+  ctx.globalCompositeOperation = "multiply";
+  ctx.drawImage(lm, 0, 0, W, H);
+
+  // 4. things that glow
+  ctx.globalCompositeOperation = "lighter";
+  ctx.save(); fireboxPath(ctx); ctx.clip();
+  radial(ctx, 760, 860, 300, [[0, `rgba(255,120,40,${0.45 * flick})`], [1, "rgba(0,0,0,0)"]]);
+  radial(ctx, 760, 868, 150, [[0, `rgba(255,110,30,${0.4 * flick})`], [1, "rgba(0,0,0,0)"]]);
+  const by = 850;
+  // soft flame tongues underneath give the fire its overall shape...
+  for (const [scale, c0, c1] of [[1.0, "rgba(255,80,20,0.2)", "rgba(190,30,10,0)"],
+                                 [0.7, "rgba(255,150,40,0.24)", "rgba(255,90,20,0)"],
+                                 [0.38, "rgba(255,232,175,0.3)", "rgba(255,190,90,0)"]]) {
+    for (const tg of tongues) {
+      const h = tg.h * scale * (0.55 + 0.6 * noise(t * tg.sp + tg.s)) * (0.85 + 0.15 * flick);
+      const w = tg.w * (0.45 + 0.4 * scale);
+      const sway = (noise(t * tg.sp * 1.7 + tg.s + 50) - 0.5) * w * 0.9;
+      const x = tg.x;
+      const gr = ctx.createLinearGradient(0, by, 0, by - h);
+      gr.addColorStop(0, c0); gr.addColorStop(0.55, c0); gr.addColorStop(1, c1);
+      ctx.fillStyle = gr;
+      ctx.beginPath(); ctx.moveTo(x - w / 2, by + 6);
+      ctx.bezierCurveTo(x - w / 2, by - h * 0.4, x + sway - w * 0.16, by - h * 0.78, x + sway, by - h);
+      ctx.bezierCurveTo(x + sway + w * 0.16, by - h * 0.78, x + w / 2, by - h * 0.4, x + w / 2, by + 6);
+      ctx.fill();
+    }
+  }
+  // ...and hundreds of glowing particles rise through them, shrinking and cooling
+  // from white-yellow to deep red, which is what makes it read as real fire.
+  const spawnN = Math.floor(340 * dt + Math.random());
+  for (let i = 0; i < spawnN; i++) {
+    const u = (Math.random() + Math.random()) / 2, x = 648 + u * 224;
+    const strength = noise(x / 45 + t * 1.4);
+    firePs.push({ x, y: by - 4 + Math.random() * 8, vy: -(60 + 190 * strength * (1 - Math.abs(u - 0.5))),
+      size: 10 + 26 * strength + Math.random() * 8, life: 0, max: 0.5 + 0.55 * strength, s: Math.random() * 100 });
+  }
+  for (const p of firePs) {
+    p.life += dt; p.y += p.vy * dt; p.vy -= 50 * dt;
+    p.x += (noise(t * 2.5 + p.s) - 0.5) * 80 * dt + (760 - p.x) * 0.6 * dt * (p.life / p.max);
+    const f = p.life / p.max;
+    if (f >= 1) continue;
+    const s = p.size * (1 - 0.7 * f);
+    ctx.globalAlpha = (1 - f) * 0.5 * (0.85 + 0.15 * flick);
+    ctx.drawImage(fireSprites[Math.min(4, Math.floor(f * 5))], p.x - s, p.y - s, 2 * s, 2 * s);
+  }
+  ctx.globalAlpha = 1;
+  firePs = firePs.filter(p => p.life < p.max);
+  if (Math.random() < dt * 7) embers.push({ x: 660 + Math.random() * 200, y: by - 30, vy: -60 - Math.random() * 70, life: 0, max: 1.4 + Math.random() * 1.6, r: 1.2 + Math.random() * 1.6, s: Math.random() * 50 });
+  for (const e of embers) {
+    e.life += dt; e.y += e.vy * dt; e.x += (noise(t * 2 + e.s) - 0.5) * 60 * dt;
+    const a = Math.max(0, 1 - e.life / e.max);
+    ctx.fillStyle = `rgba(255,${150 + 60 * a},70,${a})`;
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2); ctx.fill();
+  }
+  for (let i = embers.length - 1; i >= 0; i--) if (embers[i].life > embers[i].max) embers.splice(i, 1);
+  // the front log sits in front of the flames, its top edge glowing
+  ctx.globalCompositeOperation = "source-over";
+  const lgr = ctx.createLinearGradient(0, 846, 0, 878);
+  lgr.addColorStop(0, `rgb(${150 + 60 * flick},${70 + 30 * flick},30)`);
+  lgr.addColorStop(0.25, "#4a2614"); lgr.addColorStop(1, "#1e0f08");
+  ctx.fillStyle = lgr; rr(ctx, 650, 846, 222, 30, 15); ctx.fill();
+  ctx.fillStyle = "#6b4a32"; ctx.beginPath(); ctx.ellipse(857, 861, 11, 13, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.fillStyle = `rgba(255,120,40,${0.35 * flick})`;
+  for (let i = 0; i < 7; i++) {   // embers glowing in the bark cracks
+    const cx = 670 + i * 28 + 10 * Math.sin(i * 7), a = 0.5 + 0.5 * noise(t * 2 + i * 13);
+    ctx.globalAlpha = a; ctx.fillRect(cx, 850 + (i % 3) * 6, 12, 2);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  for (const [i, c] of CANDLES.entries()) {
+    const fx = c.x + (noise(t * 3 + i * 9) - 0.5) * 3, fy = MANTEL.y0 - c.h - 12, fh = 16 + 3 * noise(t * 5 + i);
+    radial(ctx, fx, fy, 46, [[0, "rgba(255,180,90,0.35)"], [1, "rgba(0,0,0,0)"]]);
+    ctx.fillStyle = "rgba(255,215,140,0.95)";
+    ctx.beginPath(); ctx.moveTo(fx, fy - fh); ctx.quadraticCurveTo(fx + 7, fy, fx, fy + 5); ctx.quadraticCurveTo(fx - 7, fy, fx, fy - fh); ctx.fill();
+  }
+  for (const L of treeLights) {
+    // blinking bulbs switch on and off at random; about a third stay lit so the tree never goes dark
+    if (!L.steady && t > L.next) { L.on = !L.on; L.next = t + (L.on ? 0.4 + Math.random() * 1.8 : 0.15 + Math.random() * 0.5); }
+    L.level += ((L.on ? 1 : 0) - L.level) * Math.min(1, dt * 18);
+    if (L.level < 0.02) continue;
+    ctx.globalAlpha = 0.95 * L.level;
+    ctx.drawImage(lightSprite(L.c), L.x - 16, L.y - 16);
+  }
+  ctx.globalAlpha = 1;
+  for (const G of garland) {
+    const a = 0.6 + 0.4 * Math.sin(t * 1.1 + G.ph);
+    radial(ctx, G.x, G.y, 14, [[0, `rgba(255,205,130,${0.7 * a})`], [1, "rgba(0,0,0,0)"]]);
+    ctx.fillStyle = `rgba(255,235,180,${a})`; ctx.beginPath(); ctx.arc(G.x, G.y, 2.4, 0, Math.PI * 2); ctx.fill();
+  }
+  drawBoardGlow(ctx, t);
+  // star on the tree
+  const sa = 0.85 + 0.15 * Math.sin(t * 1.7);
+  radial(ctx, TREE.cx, TREE.top - 6, 70, [[0, `rgba(255,220,130,${0.55 * sa})`], [1, "rgba(0,0,0,0)"]]);
+  ctx.fillStyle = `rgba(255,226,140,${sa})`; ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? 9 : 22, a = -Math.PI / 2 + i * Math.PI / 5;
+    ctx.lineTo(TREE.cx + Math.cos(a) * r, TREE.top - 6 + Math.sin(a) * r);
+  }
+  ctx.fill();
+
+  // 5. finishing: vignette and a touch of film grain
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(vignette, 0, 0);
+  ctx.globalCompositeOperation = "overlay";
+  ctx.globalAlpha = 0.06;
+  ctx.save(); ctx.translate(Math.random() * 256, Math.random() * 256);
+  ctx.fillStyle = grainPat; ctx.fillRect(-256, -256, W + 512, H + 512);
+  ctx.restore();
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+  drawNowPlaying(ctx, t);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Python environment (rebuild with: python -m venv .venv)
+.venv/
+__pycache__/
+
+# Leftovers from earlier experiments (the cancelled lo-fi project's media is too big for GitHub)
+render/
+test_hh/
+*.mp4
+lofi_beat.wav
+*_log.txt
+*_verify.txt
+
+# Music is never committed: most licenses forbid redistributing the files, and this repo may be
+# public. Download tracks into christmas/music/ on each machine, then run build_playlist.py.
+christmas/music/**
+!christmas/music/credits.csv
+christmas/music_ready/
+
+# Regenerable audio (fire_ambience.py makes these)
+christmas/*.wav

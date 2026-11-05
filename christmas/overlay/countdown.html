@@ -1,0 +1,148 @@
+<!doctype html>
+<!--
+  Live Christmas countdown overlay for OBS.
+  OBS: Sources > + > Browser > "Local file" = this file, width 1920, height 1080.
+  The background is transparent so it sits on top of the fireplace video.
+
+  URL options (add after ?, joined with &):
+    preview=1                     dark backdrop for checking it in a normal browser
+    date=2026-12-25T00:00:00-05:00   exact moment to count to (default: Dec 25, midnight, this PC's time)
+    pos=br                        corner: bl (default), br, tl, tr
+    scale=1.2                     size multiplier
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Christmas Countdown</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --card: rgba(20, 12, 10, 0.55);
+    --edge: rgba(255, 214, 160, 0.22);
+    --gold: #f5d29b;
+    --text: #fff6ea;
+    --muted: rgba(255, 238, 215, 0.72);
+    --scale: 1;
+  }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body.preview { background: radial-gradient(ellipse at 30% 70%, #5a2a14 0%, #1a0e0a 55%, #0b0707 100%); }
+
+  .card {
+    position: absolute;
+    left: 64px; bottom: 64px;
+    transform: scale(var(--scale));
+    transform-origin: bottom left;
+    padding: 22px 30px 24px;
+    border-radius: 22px;
+    background: var(--card);
+    border: 1px solid var(--edge);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    color: var(--text);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  .card.br { left: auto; right: 64px; transform-origin: bottom right; }
+  .card.tl { bottom: auto; top: 64px; transform-origin: top left; }
+  .card.tr { bottom: auto; top: 64px; left: auto; right: 64px; transform-origin: top right; }
+
+  .label {
+    font-family: "Fraunces", Georgia, serif;
+    font-size: 26px;
+    letter-spacing: 0.02em;
+    color: var(--gold);
+    margin: 0 0 12px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .label svg { width: 22px; height: 22px; flex: none; }
+
+  .units { display: flex; gap: 14px; align-items: flex-end; }
+  .unit { text-align: center; min-width: 84px; }
+  .num {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 600;
+    font-size: 60px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums lining-nums;
+    text-shadow: 0 0 18px rgba(255, 170, 90, 0.35);
+  }
+  .unit.days .num { font-size: 72px; }
+  .cap {
+    margin-top: 8px;
+    font-size: 13px; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .sep { font-family: "Fraunces", Georgia, serif; font-size: 48px; color: var(--muted); padding-bottom: 30px; }
+
+  .merry {
+    display: none;
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 600; font-size: 64px; line-height: 1.05;
+    color: var(--text);
+    text-shadow: 0 0 22px rgba(255, 170, 90, 0.45);
+  }
+  .card.is-christmas .units { display: none; }
+  .card.is-christmas .merry { display: block; }
+</style>
+</head>
+<body>
+  <div class="card" id="card">
+    <p class="label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+        <path d="M12 2v20M4.5 6.5l15 11M19.5 6.5l-15 11M9 3.5l3 2.5 3-2.5M9 20.5l3-2.5 3 2.5"/>
+      </svg>
+      <span id="label">Christmas in</span>
+    </p>
+    <div class="units">
+      <div class="unit days"><div class="num" id="d">0</div><div class="cap" id="dcap">days</div></div>
+      <div class="unit"><div class="num" id="h">00</div><div class="cap">hours</div></div>
+      <div class="sep">:</div>
+      <div class="unit"><div class="num" id="m">00</div><div class="cap">min</div></div>
+      <div class="sep">:</div>
+      <div class="unit"><div class="num" id="s">00</div><div class="cap">sec</div></div>
+    </div>
+    <div class="merry">Merry Christmas!</div>
+  </div>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get("preview")) document.body.classList.add("preview");
+  const card = document.getElementById("card");
+  if (["br", "tl", "tr"].includes(q.get("pos"))) card.classList.add(q.get("pos"));
+  if (q.get("scale")) document.documentElement.style.setProperty("--scale", q.get("scale"));
+
+  function target(now) {
+    if (q.get("date")) return new Date(q.get("date"));
+    // Midnight on Dec 25 in this PC's time zone; after Boxing Day, roll to next year.
+    let t = new Date(now.getFullYear(), 11, 25);
+    if (now - t > 2 * 86400e3) t = new Date(now.getFullYear() + 1, 11, 25);
+    return t;
+  }
+
+  const pad = n => String(n).padStart(2, "0");
+  const el = id => document.getElementById(id);
+
+  function tick() {
+    const now = new Date();
+    const t = target(now);
+    const diff = t - now;
+    // Christmas Day (and the day after): show the greeting instead of zeros.
+    const christmas = diff <= 0 && diff > -2 * 86400e3;
+    card.classList.toggle("is-christmas", christmas);
+    if (!christmas) {
+      const s = Math.max(0, Math.floor(diff / 1000));
+      const d = Math.floor(s / 86400);
+      el("d").textContent = d;
+      el("dcap").textContent = d === 1 ? "day" : "days";
+      el("h").textContent = pad(Math.floor(s / 3600) % 24);
+      el("m").textContent = pad(Math.floor(s / 60) % 60);
+      el("s").textContent = pad(s % 60);
+    }
+    setTimeout(tick, 1000 - (Date.now() % 1000) + 5);   // stay aligned to the second
+  }
+  tick();
+</script>
+</body>
+</html>

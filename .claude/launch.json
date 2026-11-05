@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "christmas-scene",
+      "runtimeExecutable": "D:\\247\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "http.server", "8247", "--bind", "127.0.0.1", "--directory", "D:\\247\\christmas"],
+      "port": 8247
+    }
+  ]
+}
